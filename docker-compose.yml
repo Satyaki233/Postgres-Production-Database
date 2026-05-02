@@ -1,8 +1,11 @@
 services:
+
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
   postgres:
     build: .
     container_name: postgres_production
     restart: unless-stopped
+    command: postgres -c config_file=/etc/postgresql/postgresql.conf
 
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
@@ -10,12 +13,15 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       PGDATA: /var/lib/postgresql/data/pgdata
       POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+
     ports:
-      - "127.0.0.1:5433:5432"
+      - "127.0.0.1:5434:5432"   # direct access for admin/init scripts
 
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./init:/docker-entrypoint-initdb.d # ← mounts entire init folder
+      - ./init:/docker-entrypoint-initdb.d
+      - ./postgresql.conf:/etc/postgresql/postgresql.conf
+      - ./backups/wal_archive:/var/lib/postgresql/wal_archive
 
     networks:
       - db_internal
@@ -33,13 +39,102 @@ services:
         max-size: "50m"
         max-file: "5"
 
+  # ── PgBouncer ───────────────────────────────────────────────────────────────
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    container_name: pgbouncer
+    restart: unless-stopped
+
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB}
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      POOL_MODE: session
+      MAX_CLIENT_CONN: 200
+      DEFAULT_POOL_SIZE: 20
+      AUTH_TYPE: scram-sha-256
+
+    ports:
+      - "127.0.0.1:6432:5432"   # main client entry point
+
+    networks:
+      - db_internal
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ── postgres_exporter ───────────────────────────────────────────────────────
+  postgres_exporter:
+    image: prometheuscommunity/postgres-exporter:latest
+    container_name: postgres_exporter
+    restart: unless-stopped
+
+    environment:
+      DATA_SOURCE_NAME: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
+
+    networks:
+      - db_internal
+      - monitoring
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ── Prometheus ──────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    restart: unless-stopped
+
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+
+    ports:
+      - "127.0.0.1:9090:9090"
+
+    networks:
+      - monitoring
+
+  # ── Grafana ─────────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    restart: unless-stopped
+
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+
+    ports:
+      - "127.0.0.1:3000:3000"
+
+    networks:
+      - monitoring
+
+    depends_on:
+      - prometheus
+
 networks:
   db_internal:
+    driver: bridge
+  monitoring:
     driver: bridge
 
 volumes:
   postgres_data:
-
-configs:
-  pg_hba:
-    file: ./init/restrict_access.sh
+  prometheus_data:
+  grafana_data:

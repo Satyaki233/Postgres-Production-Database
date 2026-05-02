@@ -1,18 +1,39 @@
-# Postgres Production Database
+# PostgreSQL Data Warehouse
 
-A Dockerized PostgreSQL 16 production database setup with the `pg_uuidv7` extension, hardened access controls, and a two-tier role system for a data warehouse.
+A full-scale, Dockerized data warehouse built on PostgreSQL 16, pre-loaded with the TPC-DS benchmark dataset (SF 10, ~10 GB) and a complete monitoring + connection-pooling stack.
 
 ---
 
-## Overview
+## Architecture
 
-This repo provisions a self-contained, production-ready PostgreSQL 16 instance using Docker Compose. Key design decisions:
+```
+Clients
+  │
+  ▼
+PgBouncer :5432          ← session-mode connection pool (200 max clients)
+  │
+  ▼
+PostgreSQL :5433         ← OLAP-tuned (16 GB RAM / 4 cores)
+  ├── raw/               ← TPC-DS data as-loaded (24 tables, ~50M rows)
+  ├── staging/           ← cleaned, typed, null-safe copies
+  └── marts/             ← partitioned fact tables + conformed dimensions
 
-- **pg_uuidv7 extension** built from source for time-ordered UUID primary keys
-- **Port bound to `127.0.0.1` only** — not exposed to the network
-- **SCRAM-SHA-256 authentication** instead of the default MD5
-- **Public schema locked down** — no default open access
-- **Two roles** (`warehouse_developer`, `warehouse_analyst`) with auto-grant on new schemas
+postgres_exporter → Prometheus :9090 → Grafana :3000
+```
+
+**What's included:**
+
+| Component                 | Purpose                                           |
+| ------------------------- | ------------------------------------------------- |
+| PostgreSQL 16 + pg_uuidv7 | Core database + time-ordered UUIDs                |
+| pg_partman                | Range partition management on fact tables         |
+| pg_cron                   | Scheduled VACUUM + partition maintenance          |
+| pg_stat_statements        | Query performance tracking                        |
+| tablefunc / cube          | Pivot tables, OLAP-style queries                  |
+| PgBouncer (session mode)  | Connection pooling — safe for analytics workloads |
+| postgres_exporter         | Exposes PostgreSQL metrics to Prometheus          |
+| Prometheus                | Metrics store (30-day retention)                  |
+| Grafana                   | Pre-provisioned PostgreSQL dashboard              |
 
 ---
 
@@ -20,15 +41,40 @@ This repo provisions a self-contained, production-ready PostgreSQL 16 instance u
 
 ```
 .
-├── Dockerfile                     # Multi-stage build: compiles pg_uuidv7, then packages it into postgres:16
-├── docker-compose.yml             # Service definition, volumes, networking, healthcheck
-├── .env                           # Secrets (gitignored) — DB name, user, password
+├── Dockerfile                              # Multi-stage: builds pg_uuidv7 + installs pg_partman, pg_cron
+├── docker-compose.yml                      # 5-service stack
+├── postgresql.conf                         # OLAP tuning (16 GB RAM / 4 cores)
+├── .env                                    # Secrets (gitignored)
 ├── .gitignore
-├── init/
-│   ├── 01_restrict_access.sh      # Locks down PUBLIC access; runs first on container init
-│   └── 02_roles_setup.sql         # Creates warehouse roles and example users; runs second
+│
+├── init/                                   # Auto-run on first container start, in order
+│   ├── 01_restrict_access.sh               # Locks down PUBLIC; elevates superuser
+│   ├── 02_roles_setup.sql                  # Roles, schemas (raw/staging/marts), extensions
+│   └── 03_cron_jobs.sql                    # pg_cron: nightly VACUUM + weekly partition maintenance
+│
+├── tpcds/
+│   ├── generate.sh                         # Builds dsdgen, generates SF10 .dat files → data/
+│   ├── load.sh                             # Bulk-loads .dat files into raw schema
+│   └── schema/
+│       └── tpcds.sql                       # 24-table TPC-DS DDL (raw schema, no constraints)
+│
+├── staging/
+│   └── transform.sql                       # raw → staging: trims strings, filters null PKs
+│
+├── marts/
+│   ├── create_marts.sql                    # Partitioned facts + conformed dimensions
+│   └── indexes.sql                         # B-tree indexes + VACUUM ANALYZE
+│
+├── prometheus/
+│   └── prometheus.yml
+├── grafana/
+│   └── provisioning/
+│       ├── datasources/prometheus.yml
+│       └── dashboards/
+│           ├── dashboards.yml
+│           └── postgres.json               # Grafana dashboard ID 9628 (auto-provisioned)
 └── scripts/
-    └── roles.sql                  # Reference copy of the roles SQL (not auto-executed)
+    └── roles.sql                           # Reference copy of roles SQL
 ```
 
 ---
@@ -36,179 +82,194 @@ This repo provisions a self-contained, production-ready PostgreSQL 16 instance u
 ## Prerequisites
 
 - Docker and Docker Compose v2
-- No local PostgreSQL needed — everything runs inside the container
+- ~35 GB free disk (10 GB data + 3× overhead for indexes/WAL + monitoring volumes)
+- `git` and C build tools (only needed on the host to run `generate.sh`)
 
 ---
 
 ## Configuration
 
-Copy `.env` and fill in your values (never commit this file):
+Create `.env` with your credentials (already gitignored):
 
 ```env
-POSTGRES_DB=your_database_name
-POSTGRES_USER=your_superuser_name
-POSTGRES_PASSWORD=your_strong_password
+POSTGRES_DB=warehouse
+POSTGRES_USER=your_superuser
+POSTGRES_PASSWORD=strong_password
+GRAFANA_PASSWORD=your_grafana_password
 ```
-
-The `.gitignore` already excludes `.env`.
 
 ---
 
 ## Quick Start
 
 ```bash
-# Build the image and start the container
+# 1. Build images and start the stack
 docker compose up -d
 
-# Check health
+# 2. Confirm all services are healthy
 docker compose ps
-
-# Connect (port 5433 on localhost)
-psql -h 127.0.0.1 -p 5433 -U <POSTGRES_USER> -d <POSTGRES_DB>
 ```
 
 ---
 
-## Container Details
-
-| Setting | Value |
-|---|---|
-| Base image | `postgres:16` (Debian) |
-| Container name | `postgres_production` |
-| Host port | `127.0.0.1:5433` |
-| Internal port | `5432` |
-| Data volume | `postgres_data` (named Docker volume) |
-| Restart policy | `unless-stopped` |
-| Auth method | `scram-sha-256` |
-| Log driver | `json-file` (50 MB × 5 files) |
-| Network | `db_internal` (bridge, isolated) |
-
-### Healthcheck
+## Loading TPC-DS Data (One-Time)
 
 ```bash
-pg_isready -U <POSTGRES_USER> -d <POSTGRES_DB>
-# interval: 10s | timeout: 5s | retries: 5 | start_period: 30s
+# Step 1 — Generate 10 GB of data (~20-30 min)
+bash tpcds/generate.sh
+
+# Step 2 — Create raw schema tables
+psql -h 127.0.0.1 -p 5434 -U $POSTGRES_USER -d $POSTGRES_DB \
+     -f tpcds/schema/tpcds.sql
+
+# Step 3 — Bulk load into raw schema (~20-40 min)
+bash tpcds/load.sh
+
+# Step 4 — Clean and copy into staging
+psql -h 127.0.0.1 -p 5434 -U $POSTGRES_USER -d $POSTGRES_DB \
+     -f staging/transform.sql
+
+# Step 5 — Build partitioned facts + dimensions
+psql -h 127.0.0.1 -p 5434 -U $POSTGRES_USER -d $POSTGRES_DB \
+     -f marts/create_marts.sql
+
+# Step 6 — Add indexes and run VACUUM ANALYZE
+psql -h 127.0.0.1 -p 5434 -U $POSTGRES_USER -d $POSTGRES_DB \
+     -f marts/indexes.sql
+```
+
+Total time: approximately 1–1.5 hours on a typical laptop.
+
+---
+
+## Service Ports
+
+| Service    | Host             | Purpose                                  |
+| ---------- | ---------------- | ---------------------------------------- |
+| PgBouncer  | `127.0.0.1:6432` | Main client entry point                  |
+| PostgreSQL | `127.0.0.1:5434` | Admin / init scripts only                |
+| Grafana    | `127.0.0.1:3000` | Dashboards (admin / `$GRAFANA_PASSWORD`) |
+| Prometheus | `127.0.0.1:9090` | Metrics query UI                         |
+
+---
+
+## Connecting
+
+Via PgBouncer (normal use):
+
+```
+postgresql://user:password@127.0.0.1:6432/warehouse
+```
+
+Direct PostgreSQL (admin only):
+
+```
+postgresql://user:password@127.0.0.1:5434/warehouse
 ```
 
 ---
 
-## Initialization Scripts
+## Data Model
 
-Files inside `./init/` are mounted to `/docker-entrypoint-initdb.d/` and run **once**, in filename order, the first time the container starts (i.e., when the data volume is empty).
+### Raw Schema (24 TPC-DS tables)
 
-### `01_restrict_access.sh` — Access Hardening
+Exact copy of generated data. No constraints. Used only as a landing zone.
 
-Runs as the superuser and does three things:
+**Fact tables:** `store_sales` (~28M rows), `web_sales` (~7M), `catalog_sales` (~14M), `store_returns`, `web_returns`, `catalog_returns`, `inventory`
 
-1. Elevates `POSTGRES_USER` to `SUPERUSER` with `CREATEROLE` and `CREATEDB`
-2. Revokes `ALL` on the database and `public` schema from `PUBLIC` (closes the default open door)
-3. Re-grants full access exclusively to `POSTGRES_USER`
+**Dimension tables:** `date_dim`, `time_dim`, `customer`, `customer_demographics`, `customer_address`, `item`, `store`, `promotion`, `household_demographics`, `web_site`, `web_page`, `warehouse`, `ship_mode`, `reason`, `income_band`, `call_center`, `catalog_page`
 
-### `02_roles_setup.sql` — Role & User Provisioning
+### Staging Schema
 
-Creates two roles and an event trigger (see [Role System](#role-system) below), then creates example users.
+Cleaned copies of all 24 raw tables. Trailing whitespace trimmed, empty strings coerced to NULL, rows with null mandatory keys filtered out.
+
+### Marts Schema
+
+Production-ready layer for analytics:
+
+| Table                | Type               | Rows (SF10) | Partitioned by          |
+| -------------------- | ------------------ | ----------- | ----------------------- |
+| `fact_store_sales`   | Fact               | ~28M        | `ss_sold_date_sk` RANGE |
+| `fact_web_sales`     | Fact               | ~7M         | `ws_sold_date_sk` RANGE |
+| `fact_catalog_sales` | Fact               | ~14M        | `cs_sold_date_sk` RANGE |
+| `dim_date`           | Dimension          | 73,049      | —                       |
+| `dim_customer`       | Dimension (denorm) | ~2M         | —                       |
+| `dim_item`           | Dimension          | ~204K       | —                       |
+| `dim_store`          | Dimension          | ~402        | —                       |
+| `dim_promotion`      | Dimension          | ~1K         | —                       |
 
 ---
 
 ## Role System
 
-### `warehouse_developer`
+| Role                  | Access                                                 |
+| --------------------- | ------------------------------------------------------ |
+| `warehouse_developer` | Full read/write on `raw`, `staging`, `marts`, `public` |
+| `warehouse_analyst`   | Read-only on all schemas; can monitor via `pg_monitor` |
 
-Full read/write access — intended for engineers and backend services.
-
-| Privilege | Scope |
-|---|---|
-| `CONNECT`, `CREATE` | Database |
-| `USAGE`, `CREATE`, `ALL` | Schema `public` (and any future schemas) |
-| `ALL` | Tables, sequences, functions, procedures |
-| Default privileges | Auto-applied to future objects in all schemas |
-
-### `warehouse_analyst`
-
-Read-only access — intended for analysts and BI tools.
-
-| Privilege | Scope |
-|---|---|
-| `CONNECT` | Database |
-| `USAGE`, `CREATE` | Schema `public` (and any future schemas) |
-| `SELECT` | Tables, sequences |
-| `EXECUTE` | Functions |
-| `pg_read_all_stats`, `pg_stat_scan_tables`, `pg_monitor` | System monitoring |
-
-### Auto-Grant on New Schemas
-
-An **event trigger** (`auto_grant_on_new_schema`) fires on every `CREATE SCHEMA` DDL command and automatically grants the appropriate privileges to both roles on the new schema. No manual grants are needed when adding schemas.
-
----
-
-## Adding Users
-
-Connect as the superuser and run:
+Adding a user:
 
 ```sql
--- Developer
-CREATE USER dev_alice WITH PASSWORD 'strongpassword';
-GRANT warehouse_developer TO dev_alice;
-
--- Analyst
-CREATE USER analyst_bob WITH PASSWORD 'strongpassword';
-GRANT warehouse_analyst TO analyst_bob;
-```
-
-`scripts/roles.sql` is a reference copy of the role SQL you can re-run or adapt when provisioning additional users outside the init flow.
-
----
-
-## Extension: pg_uuidv7
-
-The `Dockerfile` uses a multi-stage build to compile [`pg_uuidv7`](https://github.com/fboulnois/pg_uuidv7) from source:
-
-```
-Stage 1 (builder): postgres:16 + build tools → compiles pg_uuidv7.so
-Stage 2 (final):   postgres:16 → copies .so, .control, and SQL files
-```
-
-To enable it in your database:
-
-```sql
-CREATE EXTENSION pg_uuidv7;
-
--- Then use it:
-SELECT uuid_generate_v7();
-```
-
-UUIDv7 is time-ordered, making it significantly more index-friendly than UUIDv4 for high-insert workloads.
-
----
-
-## Connecting from an Application
-
-```
-Host:     127.0.0.1
-Port:     5433
-Database: <POSTGRES_DB>
-User:     <your_role_user>
-Password: <password>
-SSL:      recommended (configure pg_hba.conf as needed)
-```
-
-Example connection string:
-
-```
-postgresql://dev_alice:strongpassword@127.0.0.1:5433/warehouse
+CREATE USER alice WITH PASSWORD 'strongpassword';
+GRANT warehouse_developer TO alice;   -- or warehouse_analyst
 ```
 
 ---
 
-## Known Issues
+## Monitoring
 
-- `init/02_roles_setup.sql` line 95 grants `warehouse_analyst` to `analyst_jane` but the user created on line 93 is `analyst_satyaki` — this is a copy-paste error. The corrected version is in `scripts/roles.sql` (that line is commented out). Fix before running in production.
+Open Grafana: `http://localhost:3000` (login: `admin` / `$GRAFANA_PASSWORD`)
+
+The **PostgreSQL Database** dashboard (auto-provisioned) shows:
+
+- Active / idle sessions and connection counts
+- Cache hit rate
+- Transactions per second (commits + rollbacks)
+- Temp file writes (signals insufficient `work_mem`)
+- Checkpoint timing
+- Conflicts and deadlocks
+- PostgreSQL settings (shared_buffers, work_mem, etc.)
+
+---
+
+## Scheduled Maintenance
+
+`pg_cron` runs automatically inside the warehouse database:
+
+| Schedule      | Job                                                      |
+| ------------- | -------------------------------------------------------- |
+| Daily 2:00am  | `VACUUM ANALYZE` on all three fact tables                |
+| Daily 2:30am  | `VACUUM ANALYZE` on dimension tables                     |
+| Sunday 1:00am | `pg_partman` run_maintenance (creates future partitions) |
+| Sunday 3:00am | `pg_stat_statements` reset                               |
+
+---
+
+## OLAP Tuning (postgresql.conf)
+
+Configured for 16 GB RAM / 4 cores:
+
+| Setting                | Value  | Why                                         |
+| ---------------------- | ------ | ------------------------------------------- |
+| `shared_buffers`       | 4 GB   | 25% of RAM                                  |
+| `work_mem`             | 256 MB | Per sort/hash — large for analytics queries |
+| `effective_cache_size` | 12 GB  | 75% of RAM — guides planner                 |
+| `max_parallel_workers` | 4      | One per core                                |
+| `random_page_cost`     | 1.1    | SSD-optimized                               |
+| `max_connections`      | 50     | PgBouncer is in front                       |
 
 ---
 
 ## Security Notes
 
-- The port is bound to `127.0.0.1` only — to expose it further, you must explicitly change the compose file and understand the implications.
-- `SCRAM-SHA-256` is enforced at `initdb` time via `POSTGRES_INITDB_ARGS`.
-- The `PUBLIC` role has been stripped of all default privileges — every new user must be explicitly granted a role.
-- Never commit `.env` to version control.
+- Port `5433` (PostgreSQL direct) is bound to `127.0.0.1` only — not exposed to the network
+- Port `5432` (PgBouncer) is also localhost-only
+- SCRAM-SHA-256 enforced for all PostgreSQL host connections
+- `PUBLIC` role has no default privileges
+- `.env` is gitignored; `data/` and `tpcds/tpcds-kit/` are gitignored
+
+---
+
+## Known Issues
+
+- `init/02_roles_setup.sql` line 95 in the original had a bug (`GRANT warehouse_analyst TO analyst_jane` instead of `analyst_satyaki`). This is fixed — the grant line is now commented out as an example.
