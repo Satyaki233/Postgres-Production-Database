@@ -156,7 +156,7 @@
       "spaceLength": 10,
       "stack": false,
       "steppedLine": false,
-      "targets": [{ "expr": "avg(rate(process_cpu_seconds_total{release=\"$release\", instance=\"$instance\"}[5m]) * 1000)", "format": "time_series", "intervalFactor": 2, "legendFormat": "CPU Time", "refId": "A" }],
+      "targets": [{ "expr": "avg(rate(process_cpu_seconds_total{instance=\"$instance\"}[5m]) * 1000)", "format": "time_series", "intervalFactor": 2, "legendFormat": "CPU Time", "refId": "A" }],
       "thresholds": [],
       "timeFrom": null,
       "timeRegions": [],
@@ -194,8 +194,8 @@
       "stack": false,
       "steppedLine": false,
       "targets": [
-        { "expr": "avg(rate(process_resident_memory_bytes{release=\"$release\", instance=\"$instance\"}[5m]))", "format": "time_series", "intervalFactor": 2, "legendFormat": "Resident Mem", "refId": "A" },
-        { "expr": "avg(rate(process_virtual_memory_bytes{release=\"$release\", instance=\"$instance\"}[5m]))", "format": "time_series", "intervalFactor": 2, "legendFormat": "Virtual Mem", "refId": "B" }
+        { "expr": "avg(rate(process_resident_memory_bytes{instance=\"$instance\"}[5m]))", "format": "time_series", "intervalFactor": 2, "legendFormat": "Resident Mem", "refId": "A" },
+        { "expr": "avg(rate(process_virtual_memory_bytes{instance=\"$instance\"}[5m]))", "format": "time_series", "intervalFactor": 2, "legendFormat": "Virtual Mem", "refId": "B" }
       ],
       "thresholds": [],
       "timeFrom": null,
