@@ -11,6 +11,11 @@ RUN apt-get update && apt-get install -y \
 
 FROM postgres:16
 
+RUN apt-get update && apt-get install -y \
+    postgresql-16-partman \
+    postgresql-16-cron \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --from=builder /tmp/pg_uuidv7/pg_uuidv7.so /usr/lib/postgresql/16/lib/
 COPY --from=builder /tmp/pg_uuidv7/pg_uuidv7.control /usr/share/postgresql/16/extension/
 COPY --from=builder /tmp/pg_uuidv7/sql/ /usr/share/postgresql/16/extension/

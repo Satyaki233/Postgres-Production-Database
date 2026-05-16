@@ -86,10 +86,51 @@ EXECUTE FUNCTION grant_privileges_on_new_schema();
 
 
 -- ==========================================
+-- EXTENSIONS
+-- ==========================================
+CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+CREATE SCHEMA IF NOT EXISTS partman;
+CREATE EXTENSION IF NOT EXISTS pg_partman SCHEMA partman;
+CREATE EXTENSION IF NOT EXISTS pg_cron;
+CREATE EXTENSION IF NOT EXISTS tablefunc;
+CREATE EXTENSION IF NOT EXISTS cube;
+CREATE EXTENSION IF NOT EXISTS pg_uuidv7;
+
+
+-- ==========================================
+-- WAREHOUSE SCHEMAS
+-- ==========================================
+CREATE SCHEMA IF NOT EXISTS raw;
+CREATE SCHEMA IF NOT EXISTS staging;
+CREATE SCHEMA IF NOT EXISTS marts;
+
+-- Developer: full access to all warehouse schemas
+GRANT USAGE, CREATE ON SCHEMA raw, staging, marts TO warehouse_developer;
+GRANT ALL ON SCHEMA raw, staging, marts TO warehouse_developer;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA raw     GRANT ALL ON TABLES     TO warehouse_developer;
+ALTER DEFAULT PRIVILEGES IN SCHEMA raw     GRANT ALL ON SEQUENCES  TO warehouse_developer;
+ALTER DEFAULT PRIVILEGES IN SCHEMA staging GRANT ALL ON TABLES     TO warehouse_developer;
+ALTER DEFAULT PRIVILEGES IN SCHEMA staging GRANT ALL ON SEQUENCES  TO warehouse_developer;
+ALTER DEFAULT PRIVILEGES IN SCHEMA marts   GRANT ALL ON TABLES     TO warehouse_developer;
+ALTER DEFAULT PRIVILEGES IN SCHEMA marts   GRANT ALL ON SEQUENCES  TO warehouse_developer;
+
+-- Analyst: read-only on all warehouse schemas
+GRANT USAGE ON SCHEMA raw, staging, marts TO warehouse_analyst;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA raw     GRANT SELECT ON TABLES    TO warehouse_analyst;
+ALTER DEFAULT PRIVILEGES IN SCHEMA raw     GRANT SELECT ON SEQUENCES TO warehouse_analyst;
+ALTER DEFAULT PRIVILEGES IN SCHEMA staging GRANT SELECT ON TABLES    TO warehouse_analyst;
+ALTER DEFAULT PRIVILEGES IN SCHEMA staging GRANT SELECT ON SEQUENCES TO warehouse_analyst;
+ALTER DEFAULT PRIVILEGES IN SCHEMA marts   GRANT SELECT ON TABLES    TO warehouse_analyst;
+ALTER DEFAULT PRIVILEGES IN SCHEMA marts   GRANT SELECT ON SEQUENCES TO warehouse_analyst;
+
+
+-- ==========================================
 -- EXAMPLE USERS (uncomment and edit to use)
 -- ==========================================
 CREATE USER dev_satyaki WITH PASSWORD 'devsatyaki';
 GRANT warehouse_developer TO dev_satyaki;
 
 CREATE USER analyst_satyaki WITH PASSWORD 'analystsatyaki';
-GRANT warehouse_analyst TO analyst_jane;
+GRANT warehouse_analyst TO analyst_satyaki;
