@@ -1,13 +1,12 @@
 #!/bin/bash
 # Build dsdgen and generate TPC-DS data at SF 10.
-# Output goes to ../data/ (gitignored, ~10 GB).
-# Run from the project root: bash tpcds/generate.sh
+# Output goes to data/ (gitignored, ~10 GB).
+# Run from the project root: bash generate.sh
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-DATA_DIR="$PROJECT_DIR/data"
+DATA_DIR="$SCRIPT_DIR/data"
 TPCDS_KIT_DIR="$SCRIPT_DIR/tpcds-kit"
 
 # ── Clone (skip if already present) ──────────────────────────────────────────
@@ -43,7 +42,7 @@ mkdir -p "$DATA_DIR"
 
 # dsdgen cannot handle directory paths that contain spaces.
 # Use a stable temp dir without spaces and move the files afterwards.
-TEMP_DIR="/tmp/tpcds_sf10"
+TEMP_DIR="/tmp/tpcds_sf1"
 mkdir -p "$TEMP_DIR"
 
 cd "$TPCDS_KIT_DIR/tools"
@@ -52,7 +51,7 @@ echo "Generating TPC-DS SF 10 data into $TEMP_DIR ..."
 echo "This takes ~20-30 minutes."
 
 ./dsdgen \
-  -scale 10 \
+  -scale 1 \
   -dir "$TEMP_DIR" \
   -force \
   -suffix .dat \

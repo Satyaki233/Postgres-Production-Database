@@ -1,7 +1,7 @@
 -- ==========================================
 -- RAW → STAGING TRANSFORM
 -- Cleans up dsdgen artifacts; adds NOT NULL where guaranteed by spec.
--- Run after tpcds/load.sh completes.
+-- Run after load.sh completes.
 -- ==========================================
 
 SET search_path = staging, raw, public;

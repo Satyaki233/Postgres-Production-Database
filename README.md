@@ -1,6 +1,26 @@
 # PostgreSQL Data Warehouse
 
-A full-scale, Dockerized data warehouse built on PostgreSQL 16, pre-loaded with the TPC-DS benchmark dataset (SF 10, ~10 GB) and a complete monitoring + connection-pooling stack.
+A **production-ready, Dockerized data warehouse** built on PostgreSQL 16. It ships with a fully operational three-layer data model (raw → staging → marts), an enterprise-grade backup strategy, connection pooling via PgBouncer, and a live Prometheus + Grafana monitoring stack — all running in a single `docker compose up`.
+
+### Why production-ready?
+
+Most hobby Postgres setups stop at "it runs." This one goes further:
+
+- **Three-schema architecture** — raw data lands untouched, staging cleans and validates it, marts expose partitioned fact tables and conformed dimensions optimized for analytical queries. Each layer has a defined contract and can be rebuilt independently.
+- **Connection pooling** — PgBouncer sits in front of Postgres in session mode, supporting up to 200 concurrent clients while Postgres itself stays at 50 connections. Safe for analytics workloads that hold connections open during long queries.
+- **Scheduled maintenance** — `pg_cron` runs nightly `VACUUM ANALYZE` on all fact and dimension tables and triggers `pg_partman` every Sunday to pre-create future partitions. Zero manual intervention needed.
+- **OLAP-tuned configuration** — `postgresql.conf` is sized for a 16 GB / 4-core machine: 4 GB `shared_buffers`, 256 MB `work_mem`, parallel query enabled. Not default settings — actual tuning.
+- **Role-based access control** — two roles (`warehouse_developer`, `warehouse_analyst`) with least-privilege grants. `PUBLIC` has no default access.
+- **Backup and recovery** — daily logical dumps of the marts schema, weekly full base backups, continuous WAL archiving for point-in-time recovery, and automated offsite sync. See the [Backup Strategy](#backup-strategy) section.
+
+### TPC-DS Benchmark Dataset
+
+The warehouse is pre-loaded with **TPC-DS at Scale Factor 10** (~10 GB of raw data, ~50M rows across 24 tables). TPC-DS is the industry-standard benchmark for decision-support systems — it models a realistic retail business with three sales channels (store, web, catalog), customer demographics, promotions, inventory, and returns.
+
+Loading TPC-DS serves two purposes here:
+
+1. **Realistic data volume** — 28M store sales rows, 14M catalog rows, and 7M web rows give the query planner real work to do. Partition pruning, parallel scans, and index usage all behave differently at this scale than on toy datasets.
+2. **Benchmark baseline** — the same dataset powers the official TPC-DS query suite (99 queries). Running those queries against this setup gives a repeatable, comparable performance baseline as you tune `postgresql.conf`, add indexes, or change partition strategies.
 
 ---
 
@@ -52,18 +72,8 @@ postgres_exporter → Prometheus :9090 → Grafana :3000
 │   ├── 02_roles_setup.sql                  # Roles, schemas (raw/staging/marts), extensions
 │   └── 03_cron_jobs.sql                    # pg_cron: nightly VACUUM + weekly partition maintenance
 │
-├── tpcds/
-│   ├── generate.sh                         # Builds dsdgen, generates SF10 .dat files → data/
-│   ├── load.sh                             # Bulk-loads .dat files into raw schema
-│   └── schema/
-│       └── tpcds.sql                       # 24-table TPC-DS DDL (raw schema, no constraints)
-│
-├── staging/
-│   └── transform.sql                       # raw → staging: trims strings, filters null PKs
-│
-├── marts/
-│   ├── create_marts.sql                    # Partitioned facts + conformed dimensions
-│   └── indexes.sql                         # B-tree indexes + VACUUM ANALYZE
+├── generate.sh                             # Builds dsdgen, generates SF10 .dat files → data/
+├── load.sh                                 # Bulk-loads .dat files into raw schema
 │
 ├── prometheus/
 │   └── prometheus.yml
@@ -74,7 +84,17 @@ postgres_exporter → Prometheus :9090 → Grafana :3000
 │           ├── dashboards.yml
 │           └── postgres.json               # Grafana dashboard ID 9628 (auto-provisioned)
 └── scripts/
-    └── roles.sql                           # Reference copy of roles SQL
+    ├── raw/
+    │   └── raw.sql                         # 24-table TPC-DS DDL (raw schema, no constraints)
+    ├── staging/
+    │   └── transform.sql                   # raw → staging: trims strings, filters null PKs
+    ├── marts/
+    │   ├── create_marts.sql                # Partitioned facts + conformed dimensions
+    │   ├── load_facts.sql                  # Fact inserts (low-parallelism, Docker-safe)
+    │   └── indexes.sql                     # B-tree indexes + VACUUM ANALYZE
+    └── analytics/
+        ├── warehouse_queries.sql           # 10 analytical queries across the marts layer
+        └── analytics.md                   # Query reference — purpose, columns, what to look for
 ```
 
 ---
@@ -116,26 +136,26 @@ docker compose ps
 
 ```bash
 # Step 1 — Generate 10 GB of data (~20-30 min)
-bash tpcds/generate.sh
+bash generate.sh
 
 # Step 2 — Create raw schema tables
 psql -h 127.0.0.1 -p 5434 -U $POSTGRES_USER -d $POSTGRES_DB \
-     -f tpcds/schema/tpcds.sql
+     -f scripts/raw/raw.sql
 
 # Step 3 — Bulk load into raw schema (~20-40 min)
-bash tpcds/load.sh
+bash load.sh
 
 # Step 4 — Clean and copy into staging
 psql -h 127.0.0.1 -p 5434 -U $POSTGRES_USER -d $POSTGRES_DB \
-     -f staging/transform.sql
+     -f scripts/staging/transform.sql
 
 # Step 5 — Build partitioned facts + dimensions
 psql -h 127.0.0.1 -p 5434 -U $POSTGRES_USER -d $POSTGRES_DB \
-     -f marts/create_marts.sql
+     -f scripts/marts/create_marts.sql
 
 # Step 6 — Add indexes and run VACUUM ANALYZE
 psql -h 127.0.0.1 -p 5434 -U $POSTGRES_USER -d $POSTGRES_DB \
-     -f marts/indexes.sql
+     -f scripts/marts/indexes.sql
 ```
 
 Total time: approximately 1–1.5 hours on a typical laptop.
@@ -200,6 +220,34 @@ Production-ready layer for analytics:
 
 ---
 
+## Analytical Queries
+
+Pre-built queries covering the most common business questions live in `scripts/analytics/`.
+
+| # | Query | Business Question |
+| - | ----- | ----------------- |
+| Q1  | Annual revenue by channel        | How do store, web, and catalog compare year over year? |
+| Q2  | Top 10 categories by net profit  | Which product categories actually make money? |
+| Q3  | Store performance ranking        | Which stores are most profitable, and why? |
+| Q4  | Customer segments                | Which credit rating × gender segment spends the most? |
+| Q5  | Promotion effectiveness          | Which promotions generate the best revenue per dollar spent? |
+| Q6  | Monthly trend + moving average   | Are there seasonal patterns in store revenue? |
+| Q7  | Year-over-year growth by channel | Which channel is growing fastest? |
+| Q8  | Holiday lift analysis            | Do holidays and weekends drive higher spend? |
+| Q9  | Top 10 states by net profit      | Where is revenue geographically concentrated? |
+| Q10 | Brand profitability (all channels) | Which brands contribute the most profit across all three channels? |
+
+**Run all queries:**
+
+```bash
+docker exec postgres_production psql -U $POSTGRES_USER -d $POSTGRES_DB \
+    -f scripts/analytics/warehouse_queries.sql
+```
+
+See [`scripts/analytics/analytics.md`](scripts/analytics/analytics.md) for a full explanation of every query — what it does, why it matters, and what to look for in the results.
+
+---
+
 ## Role System
 
 | Role                  | Access                                                 |
@@ -245,6 +293,42 @@ The **PostgreSQL Database** dashboard (auto-provisioned) shows:
 
 ---
 
+## Backup Strategy
+
+Full documentation lives in [`backup.md`](backup.md). Summary:
+
+### Three-layer backup approach
+
+| Layer | Method | What it protects | Retention |
+| ----- | ------ | ---------------- | --------- |
+| **Daily logical dump** | `pg_dump` (custom format) | `marts` schema — the work that can't be quickly regenerated | 7 days local, 30 days offsite |
+| **Weekly base backup** | `pg_basebackup` | Full cluster snapshot for a clean restore point | 4 weeks |
+| **Continuous WAL archiving** | `archive_command` | Every committed transaction — enables point-in-time recovery (PITR) to any second | Until disk fills (~30 days) |
+
+### Why marts-only for daily dumps?
+
+`raw` and `staging` are fully regenerable — run `generate.sh` + `load.sh` + `scripts/staging/transform.sql` and you're back. Dumping them daily would take ~45 min and write ~12 GB. The marts-only dump takes ~12 min and writes ~2.5 GB, protecting only the data that can't be quickly rebuilt.
+
+### Scripts
+
+```bash
+# Daily dump (marts only by default, --full for all schemas)
+bash scripts/backup/daily_dump.sh
+
+# Weekly base backup
+bash scripts/backup/weekly_basebackup.sh
+
+# Verify the latest dump is restorable
+bash scripts/backup/verify_backup.sh --latest-dump
+
+# Restore from a specific dump
+bash scripts/backup/restore.sh backups/dumps/daily/<timestamp>/
+```
+
+Backups land in `backups/dumps/` (logical) and `backups/wal_archive/` (WAL segments). Both directories are gitignored.
+
+---
+
 ## OLAP Tuning (postgresql.conf)
 
 Configured for 16 GB RAM / 4 cores:
@@ -266,7 +350,7 @@ Configured for 16 GB RAM / 4 cores:
 - Port `5432` (PgBouncer) is also localhost-only
 - SCRAM-SHA-256 enforced for all PostgreSQL host connections
 - `PUBLIC` role has no default privileges
-- `.env` is gitignored; `data/` and `tpcds/tpcds-kit/` are gitignored
+- `.env` is gitignored; `data/` and `tpcds-kit/` are gitignored
 
 ---
 

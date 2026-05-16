@@ -97,7 +97,7 @@ backups/
 
 **Why marts-only daily vs. full Sunday?**
 
-`raw` and `staging` schemas are **regenerable** from source data via `tpcds/generate.sh` + `staging/transform.sql`. Running a full 3-schema dump daily would take ~45 min and write ~12 GB. The daily marts-only dump takes ~12 min and writes ~2.5 GB — protecting only the work that can't be regenerated quickly.
+`raw` and `staging` schemas are **regenerable** from source data via `generate.sh` + `scripts/staging/transform.sql`. Running a full 3-schema dump daily would take ~45 min and write ~12 GB. The daily marts-only dump takes ~12 min and writes ~2.5 GB — protecting only the work that can't be regenerated quickly.
 
 ---
 
@@ -665,12 +665,12 @@ docker compose ps
 
 ```bash
 docker compose up -d --build
-psql -h 127.0.0.1 -p 5434 -U satyaki -d warehouse -f tpcds/schema/tpcds.sql
-bash tpcds/generate.sh      # ~25 min
-bash tpcds/load.sh          # ~30 min
-psql ... -f staging/transform.sql    # ~15 min
-psql ... -f marts/create_marts.sql   # ~45 min
-psql ... -f marts/indexes.sql        # ~15 min
+psql -h 127.0.0.1 -p 5434 -U satyaki -d warehouse -f scripts/raw/raw.sql
+bash generate.sh                               # ~25 min
+bash load.sh                                   # ~30 min
+psql ... -f scripts/staging/transform.sql      # ~15 min
+psql ... -f scripts/marts/create_marts.sql     # ~45 min
+psql ... -f scripts/marts/indexes.sql          # ~15 min
 ```
 
 ---

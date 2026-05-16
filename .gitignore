@@ -1,5 +1,5 @@
 .env
 data/
-tpcds/tpcds-kit/
+tpcds/
 .claude/
 backups/

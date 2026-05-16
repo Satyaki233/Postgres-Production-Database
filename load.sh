@@ -1,7 +1,7 @@
 #!/bin/bash
 # Bulk-load TPC-DS .dat files into the raw schema.
 # Requires: psql, the warehouse DB must be up, and data/ must exist.
-# Run from the project root: bash tpcds/load.sh
+# Run from the project root: bash load.sh
 #
 # Override connection defaults via env:
 #   PGHOST   PGPORT   PGUSER   PGDATABASE
@@ -9,7 +9,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DATA_DIR="$(dirname "$SCRIPT_DIR")/data"
+DATA_DIR="$SCRIPT_DIR/data"
 
 : "${PGHOST:=127.0.0.1}"
 : "${PGPORT:=5434}"
@@ -17,7 +17,7 @@ DATA_DIR="$(dirname "$SCRIPT_DIR")/data"
 : "${PGDATABASE:=${POSTGRES_DB:-warehouse}}"
 
 if [[ ! -d "$DATA_DIR" ]]; then
-  echo "ERROR: $DATA_DIR not found. Run tpcds/generate.sh first."
+  echo "ERROR: $DATA_DIR not found. Run generate.sh first."
   exit 1
 fi
 
