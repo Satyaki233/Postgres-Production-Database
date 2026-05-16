@@ -17,6 +17,8 @@ Most hobby Postgres setups stop at "it runs." This one goes further:
 
 The warehouse is pre-loaded with **TPC-DS at Scale Factor 10** (~10 GB of raw data, ~50M rows across 24 tables). TPC-DS is the industry-standard benchmark for decision-support systems — it models a realistic retail business with three sales channels (store, web, catalog), customer demographics, promotions, inventory, and returns.
 
+Data is generated using **[gregrahn/tpcds-kit](https://github.com/gregrahn/tpcds-kit)**, an open-source C implementation of the official TPC-DS data generator (`dsdgen`). `generate.sh` clones and builds it automatically — no manual setup needed.
+
 Loading TPC-DS serves two purposes here:
 
 1. **Realistic data volume** — 28M store sales rows, 14M catalog rows, and 7M web rows give the query planner real work to do. Partition pruning, parallel scans, and index usage all behave differently at this scale than on toy datasets.
@@ -133,6 +135,8 @@ docker compose ps
 ---
 
 ## Loading TPC-DS Data (One-Time)
+
+> `generate.sh` automatically clones [gregrahn/tpcds-kit](https://github.com/gregrahn/tpcds-kit) and builds `dsdgen` on first run. Requires `git` and C build tools on the host.
 
 ```bash
 # Step 1 — Generate 10 GB of data (~20-30 min)
